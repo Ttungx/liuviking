@@ -119,11 +119,13 @@
       </div>
       <div class="row tight">
         <button id="routeStart" class="primary">开始路线</button>
+        <button id="routeAlignResume" hidden>已对准，继续</button>
         <button id="routeStop">停止路线</button>
         <button id="routeClear">清空路线</button>
         <button id="odomReset">重置原点与轨迹</button>
         <button id="mapReset">重置画布视图</button>
         <label class="inline" title="本车无编码器：勾选后按开环估算执行（轨迹不代表真实位置）；取消勾选则要求车端脉冲反馈，无反馈会停车且不继续拍照"><input id="routeOpenLoop" type="checkbox"> 无反馈时继续（开放环）</label>
+        <label class="inline" title="半自动（show）：直线段自动走；到节点拍完照停下，人工用 WASD 转向对准下一段，点「已对准，继续」再自动走"><input id="routeSemiAuto" type="checkbox"> show</label>
       </div>
       <p class="hint" id="routeNote">鼠标直接画路线：<b>左键按住拖拽</b>自由绘制、<b>右键逐点</b>连线路点；滚轮缩放，行驶中也可用 <b>Ctrl + 左键</b>拖动画布。网格单元格边长 60cm。
        开始路线会把当前位置当原点、车头朝地图右方（+x）；先标定：满速＝100% 直行 3 秒测距离÷3，轮距＝左右轮中心距。蓝线是开环估计轨迹，不代表车体真实位置。</p>

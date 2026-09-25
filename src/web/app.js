@@ -665,6 +665,7 @@ let mapView = null;   // 画布取景 {cx, cy, scale}：稳定缩放，内容越
 let mapViewLocked = false;  // 用户缩放或拖动画布后锁定取景，状态轮询不再抢回视图
 let odomEnabled = setting.read("odomOn", "1") === "1";   // 开关有记忆：沿用上次状态
 let routeOpenLoop = setting.read("routeOpenLoop", "1") === "1";  // 默认开放环：本车无编码器
+let routeSemiAuto = setting.read("routeSemiAuto", "0") === "1";  // 半自动（"show"）：节点人工转向
 let routePoints = [];       // 规划路线（画布上绘制，[x,y] mm）
 let routeTouched = false;   // 用户改过路线后，不再从服务端旧路线恢复
 let drawing = false;        // 左键拖拽绘制中
@@ -804,9 +805,11 @@ function paintPad() {
 function paintOdomEnabled() {
   $("odomOn").checked = odomEnabled;
   $("routeOpenLoop").checked = routeOpenLoop;
+  $("routeSemiAuto").checked = routeSemiAuto;
   document.querySelector(".map").classList.toggle("off", !odomEnabled);
   ["trackWidth", "vmax", "leftScale", "rightScale", "deadzone", "routeTol", "routeHeading",
-   "routeStart", "routeStop", "routeClear", "odomReset", "mapReset", "routeOpenLoop"].forEach((id) => {
+   "routeStart", "routeStop", "routeClear", "odomReset", "mapReset", "routeOpenLoop",
+   "routeSemiAuto", "routeAlignResume"].forEach((id) => {
     $(id).disabled = !odomEnabled;
   });
   if (!odomEnabled) $("odomPose").textContent = "未启用";
@@ -826,6 +829,7 @@ function applyOdom(data) {
   }
   if (data.route) {
     autoActive = Boolean(data.route.active);
+    $("routeAlignResume").hidden = !data.route.waiting_manual_turn;
     // 路线启动后以服务端平滑后的路线为准，规划线和执行线必须是同一条几何路径。
     if (data.route.active && data.route.waypoints && data.route.waypoints.length) {
       routePoints = data.route.waypoints.map((pt) => [pt[0], pt[1]]);
@@ -967,7 +971,8 @@ function startRoute() {
   const wp = encodeURIComponent(routePoints.map((item) => item.join(",")).join(";"));
   api(`/api/route?wp=${wp}&track=${params.track}&vmax=${params.vmax}` +
       `&left=${params.left}&right=${params.right}&dead=${params.dead}` +
-      `&tol=${params.tol}&heading=${params.heading}&fb=${routeOpenLoop ? 0 : 1}`)
+      `&tol=${params.tol}&heading=${params.heading}&fb=${routeOpenLoop ? 0 : 1}` +
+      `&semi=${routeSemiAuto ? 1 : 0}`)
     .then(applyOdom);
 }
 
@@ -1007,6 +1012,11 @@ $("routeOpenLoop").addEventListener("change", () => {
   routeOpenLoop = $("routeOpenLoop").checked;
   setting.save("routeOpenLoop", routeOpenLoop ? "1" : "0");   // 记忆，下次沿用
 });
+$("routeSemiAuto").addEventListener("change", () => {
+  routeSemiAuto = $("routeSemiAuto").checked;
+  setting.save("routeSemiAuto", routeSemiAuto ? "1" : "0");   // 记忆，下次沿用
+});
+$("routeAlignResume").addEventListener("click", () => api("/api/route_align").then(applyOdom));
 $("odomReset").addEventListener("click", () => {
   if (!odomEnabled) return;
   const params = odomParams();

@@ -224,6 +224,8 @@ class Console:
         self._route = []                           # [(x_mm, y_mm), ...]
         self._route_index = 0
         self._route_active = False
+        self._route_semi_auto = False    # 半自动（"show" 勾选）：节点拍照后人工转向
+        self._route_wait_manual = False  # 正在等待人工转向对准
         self._route_note = ""
         self._route_stop = threading.Event()
         self._route_tolerance_mm = 12.0
@@ -383,7 +385,7 @@ class Console:
                 self._take(sid)
             except BusyError:
                 return self._busy_status()
-            if self._route_active:
+            if self._route_active and not self._route_wait_manual:
                 return self._error("路线行驶中：先停止路线")
             if not self.client.is_connected:
                 return self._error("未连接：方向指令被忽略")
@@ -397,7 +399,9 @@ class Console:
         """无条件急停：任何设备都能停，也不要求已经连接。"""
         with self._lock:
             self._touch(sid)
-            self._abort_route_locked("急停（%s）" % reason)
+            # 半自动等待人工转向期间，松开按键发来的 STOP 只停车，不中止路线
+            if not (self._route_active and self._route_wait_manual):
+                self._abort_route_locked("急停（%s）" % reason)
             self.watchdog.disarm()
             self._last_cmd = None
             if self.client.is_connected:
@@ -414,7 +418,7 @@ class Console:
                 self._take(sid)
             except BusyError:
                 return self._busy_status()
-            if self._route_active:
+            if self._route_active and not self._route_wait_manual:
                 return self._error("路线行驶中：先停止路线")
             if not self.client.is_connected:
                 return self._error("未连接")
@@ -526,6 +530,8 @@ class Console:
             if last is None:
                 return
             key = self._last_cmd if self.client.is_connected else None
+            if self._route_wait_manual:
+                key = None  # 半自动等待人工转向：转身不计入估算，恢复时整段对准
             if key != self._odom_key:
                 # 指令切换（含起步、换向）：电机要先克服静摩擦，先等一拍再积分，
                 # 否则估算会比实际"早动"（2026-09-25 用户实测：按下去一开始不动）。
@@ -552,6 +558,8 @@ class Console:
                 "tolerance_mm": self._route_tolerance_mm,
                 "note": self._route_note,
                 "require_feedback": self._route_require_feedback,
+                "semi_auto": self._route_semi_auto,
+                "waiting_manual_turn": self._route_wait_manual,
                 "waypoints": list(self._route),
                 "photos": self._photo_status_locked(),
                 "motion_feedback": self._motion_feedback_snapshot_locked(),
@@ -690,7 +698,9 @@ class Console:
             heading_error_deg = abs(
                 math.degrees(wrap_angle(self.odom.theta - math.atan2(dy, dx)))
             )
-            if heading_error_deg > PHOTO_ALIGN_DEG:
+            # 半自动模式下节点拍完才人工转向，这里不做"先对齐"要求
+            if (not self._route_semi_auto
+                    and heading_error_deg > PHOTO_ALIGN_DEG):
                 return None
             self._photo_cursor[segment_index] = cursor + 1
             return target
@@ -778,6 +788,7 @@ class Console:
         deadzone=None,
         initial_theta_deg=0.0,
         require_feedback=None,
+        semi_auto=False,
     ):
         """开始按路点行驶：当前位置当原点，初始车头方向由调用方给出。
 
@@ -821,6 +832,8 @@ class Console:
             self._route_index = 0
             self._route_note = "行驶中"
             self._route_active = True
+            self._route_semi_auto = bool(semi_auto)
+            self._route_wait_manual = False
             if require_feedback is None:
                 self._route_require_feedback = self._require_motion_feedback
             else:
@@ -833,6 +846,36 @@ class Console:
             self._last_cmd = None
             threading.Thread(target=self._route_loop, name="console-route", daemon=True).start()
             logger.info("开始路线：%d 个路点，容差 %.0fmm", len(points), self._route_tolerance_mm)
+            return self.odom_snapshot(sid)
+
+    def align_and_resume(self, sid=None):
+        """半自动模式：人工转向完成后对准下一段并恢复自动行驶。
+
+        转身由人完成、系统不试图估计它：位置直接归零到该节点坐标，朝向直接设为
+        下一段方向，然后路线继续自动走直线。
+        """
+        with self._lock:
+            self._touch(sid)
+            if not (self._route_active and self._route_wait_manual):
+                return self._error("当前不在等待人工转向")
+            index = self._route_index
+            if index <= 0 or index >= len(self._route):
+                return self._error("没有可对准的下一段路线")
+            node = self._route[index - 1]
+            target = self._route[index]
+            bearing = math.atan2(target[1] - node[1], target[0] - node[0])
+            self.odom.reset(node[0], node[1], bearing)
+            self._route_wait_manual = False
+            self._route_last_drive = None
+            self._reset_route_motion_feedback_locked()
+            self.watchdog.disarm()
+            self._last_cmd = None
+            if self.client.is_connected:
+                self.client.stop(note="人工转向完成，恢复自动")
+                self._note_frame(protocol.STOP)
+            self._route_note = "行驶中"
+            logger.info("人工转向完成：对准第 %d 段 %.1f°，位置归零到 (%.0f, %.0f)",
+                        index + 1, math.degrees(bearing), node[0], node[1])
             return self.odom_snapshot(sid)
 
     def stop_route(self, sid=None, reason="用户停止路线"):
@@ -869,6 +912,11 @@ class Console:
         try:
             while not self._route_stop.is_set():
                 with self._lock:
+                    waiting = self._route_wait_manual
+                if waiting:
+                    time.sleep(0.1)   # 半自动等待人工转向：不发任何指令
+                    continue
+                with self._lock:
                     if not self.client.is_connected:
                         note = "连接断开"
                         break
@@ -899,6 +947,17 @@ class Console:
                         logger.info("到达路点 %d/%d", self._route_index + 1, len(self._route))
                         self._route_index += 1
                         self._route_last_drive = None
+                        if self._route_semi_auto and self._route_index < len(self._route):
+                            # 半自动：节点先按进站朝向拍完照，再交出控制权等人工转向；
+                            # 转完后 /api/route_align 把朝向对准下一段并恢复自动行驶。
+                            node = self._route[self._route_index - 1]
+                            nxt = self._route[self._route_index]
+                            photo_distance = self._photo_due_locked(self._route_index, node, nxt)
+                            if photo_distance is not None and photo_distance <= 1e-9:
+                                self._capture_photo_sequence_locked(self._route_index, photo_distance)
+                            self._route_wait_manual = True
+                            self._route_note = "等待人工转向：用 WASD 转到与下一段平行后点「已对准，继续」"
+                            logger.info("半自动：路点 %d 拍照完成，等待人工转向", self._route_index)
                         continue
                     cmd = polyline_command(
                         self.odom.x,
@@ -1165,9 +1224,12 @@ def make_handler(console):
                     _opt_float(params, "dead"),
                     _opt_float(params, "heading") or 0.0,
                     _opt_int(params, "fb"),
+                    _opt_int(params, "semi"),
                 ))
             elif path == "/api/route_stop":
                 self._json(console.stop_route(sid))
+            elif path == "/api/route_align":
+                self._json(console.align_and_resume(sid))
             elif path == "/favicon.ico":
                 self._send(b"", "image/x-icon", 204)
             else:

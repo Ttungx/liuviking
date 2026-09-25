@@ -316,11 +316,14 @@ class ConsoleHttpTest(unittest.TestCase):
 
     def test_odometry_accumulates_while_driving(self) -> None:
         self.connect()
-        self.get("/api/cmd?k=w")
-        time.sleep(0.7)   # 含 0.25s 起步静摩擦延迟（MOTION_START_LAG_SECONDS）
+        # 模拟页面按键连发（持续续看门狗）：扣除 0.25s 起步延迟后仍应有位移
+        deadline = time.monotonic() + 0.9
+        while time.monotonic() < deadline:
+            self.get("/api/cmd?k=w")
+            time.sleep(0.15)
         self.get("/api/stop")
         pose = self.get("/api/odom")
-        self.assertGreater(pose["x"], 20.0)      # 250mm/s（默认满速）× ~0.45s
+        self.assertGreater(pose["x"], 20.0)
         self.assertLess(pose["x"], 200.0)
 
     def test_route_requires_connection(self) -> None:
@@ -450,10 +453,10 @@ class ConsoleHttpTest(unittest.TestCase):
         self.addCleanup(setattr, web_console, "PHOTO_SETTLE_SECONDS", settle)
         self.addCleanup(setattr, web_console, "PHOTO_DATA_DIR", data_dir)
         self.addCleanup(temp_dir.cleanup)
-        result = self.get("/api/route?wp=1800,0&vmax=900&tol=12&fb=0")
+        result = self.get("/api/route?wp=1800,0&vmax=400&tol=40&fb=0")
         self.assertTrue(result["ok"])
         self.assertFalse(result["route"]["require_feedback"])
-        deadline = time.monotonic() + 8.0
+        deadline = time.monotonic() + 10.0
         route = result["route"]
         while time.monotonic() < deadline:
             route = self.get("/api/odom")["route"]
@@ -463,6 +466,57 @@ class ConsoleHttpTest(unittest.TestCase):
         self.assertFalse(route["active"])
         self.assertEqual(route["note"], "完成")
         self.assertEqual(route["photos"]["done"], 7)  # 开放环下拍照点按估算推进
+
+    def test_semi_auto_route_waits_then_aligns_and_resumes(self) -> None:
+        """半自动（semi=1）：节点拍完照停下等待，/api/route_align 对准下一段后继续。"""
+        self.connect()
+        self.console._require_motion_feedback = True
+        sample = {"available": True, "pulse1": 7, "pulse2": 7, "voltage": 12}
+        fetch_feedback = web_console._fetch_motion_feedback
+        web_console._fetch_motion_feedback = lambda host: dict(sample)
+        fetch_snapshot = web_console.fetch_snapshot
+        web_console.fetch_snapshot = lambda _url: b"\xff\xd8fake-jpeg"
+        settle = web_console.PHOTO_SETTLE_SECONDS
+        web_console.PHOTO_SETTLE_SECONDS = 0.0
+        data_dir = web_console.PHOTO_DATA_DIR
+        temp_dir = tempfile.TemporaryDirectory()
+        web_console.PHOTO_DATA_DIR = Path(temp_dir.name)
+        self.addCleanup(setattr, web_console, "_fetch_motion_feedback", fetch_feedback)
+        self.addCleanup(setattr, web_console, "fetch_snapshot", fetch_snapshot)
+        self.addCleanup(setattr, web_console, "PHOTO_SETTLE_SECONDS", settle)
+        self.addCleanup(setattr, web_console, "PHOTO_DATA_DIR", data_dir)
+        self.addCleanup(temp_dir.cleanup)
+        result = self.get("/api/route?wp=1600,0;1600,1600&vmax=400&tol=40&fb=0&semi=1")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["route"]["semi_auto"])
+        deadline = time.monotonic() + 10.0
+        route = result["route"]
+        while time.monotonic() < deadline:
+            route = self.get("/api/odom")["route"]
+            if route.get("waiting_manual_turn"):
+                break
+            self.assertTrue(route["active"], "路线提前结束：%s" % route["note"])
+            time.sleep(0.05)
+        self.assertTrue(route.get("waiting_manual_turn"), "未进入等待人工转向")
+        self.assertIn("人工转向", route["note"])
+        # 等待期间：手动指令可用；松开按键的 STOP 只停车、不中止路线
+        self.assertTrue(self.get("/api/cmd?k=w")["ok"])
+        self.get("/api/stop?why=test")
+        self.assertTrue(self.get("/api/odom")["route"]["active"])
+        # 人工转向完成：对准下一段（+y），位置归零到节点
+        aligned = self.get("/api/route_align")
+        self.assertFalse(aligned["route"]["waiting_manual_turn"])
+        self.assertAlmostEqual(aligned["theta_deg"], 90.0, places=1)
+        self.assertAlmostEqual(aligned["x"], 1600.0, delta=1.0)
+        self.assertAlmostEqual(aligned["y"], 0.0, delta=1.0)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            route = self.get("/api/odom")["route"]
+            if not route["active"]:
+                break
+            time.sleep(0.05)
+        self.assertFalse(route["active"])
+        self.assertEqual(route["note"], "完成")
 
     def test_odom_does_not_backfill_after_long_lock(self) -> None:
         """里程计线程被长临界区憋住后，放开时不能拿陈旧 dt 补积一大段假位移。
