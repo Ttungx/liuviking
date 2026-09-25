@@ -78,7 +78,11 @@ function applyArc(innerSide) {
 }
 
 function applyStraight() {
-  return api("/api/speed?side=left&value=100").then(() => api("/api/speed?side=right&value=100"));
+  // 直行预设 = 页面上"轮速与校准"的两个轮速值（可校准左右差异，别再写死 100/100）
+  const left = Number($("leftSpeed").value) || 100;
+  const right = Number($("rightSpeed").value) || 100;
+  return api("/api/speed?side=left&value=" + left)
+    .then(() => api("/api/speed?side=right&value=" + right));
 }
 
 /* 弧线模式下 A/D 实际下发的是"前进 + 不对称轮速"，直行时先恢复对称速度 */
@@ -404,6 +408,7 @@ $("applySpeed").addEventListener("click", () => {
   const right = $("rightSpeed").value;
   setting.save("leftSpeed", left);
   setting.save("rightSpeed", right);
+  speedPreset = "straight";   // 直行预设就是这两个值：下次按方向键不再覆盖
   api(`/api/speed?side=left&value=${left}`)
     .then(() => api(`/api/speed?side=right&value=${right}`))
     .then(applyStatus);
