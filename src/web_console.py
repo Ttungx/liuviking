@@ -55,6 +55,7 @@ from src.odometry import (
     polyline_command,
     route_has_sharp_corners,
     smooth_route,
+    wrap_angle,
 )
 from src.robot_client import ConnectionState, RobotClient
 from src.video_client import DEFAULT_SNAPSHOT_PATH, fetch_snapshot
@@ -98,6 +99,8 @@ GIMBAL_HOME = {"pan": 90, "tilt": 90}
 PHOTO_SPACING_MM = 300.0
 PHOTO_MIN_SEGMENT_MM = 1500.0
 PHOTO_SETTLE_SECONDS = 0.35
+#: 拍照点要求车头与所在段方向夹角不超过该值才拍（节点先转向下一段再拍）
+PHOTO_ALIGN_DEG = 5.0
 PHOTO_PORT = 8080
 PHOTO_PATH = DEFAULT_SNAPSHOT_PATH
 PHOTO_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -584,14 +587,18 @@ class Console:
     @staticmethod
     def _build_photo_schedule(points):
         route = [(0.0, 0.0)] + [tuple(point) for point in points]
+        lengths = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(route, route[1:])]
         schedule = {}
-        for index, (start, end) in enumerate(zip(route, route[1:])):
-            length = math.hypot(end[0] - start[0], end[1] - start[1])
+        for index, length in enumerate(lengths):
             if length <= PHOTO_MIN_SEGMENT_MM:
                 continue
             distances = [float(distance) for distance in range(0, int(length) + 1, int(PHOTO_SPACING_MM))]
             if not distances or distances[-1] < length:
                 distances.append(length)
+            if index + 1 < len(lengths) and lengths[index + 1] > PHOTO_MIN_SEGMENT_MM:
+                # 节点照片只留一份：本段终点交给下一段的 0mm 点（车先转向下一段
+                # 方向、对齐后才拍），避免同一节点连拍两组且拍的是旧朝向。
+                distances.pop()
             schedule[index] = distances
         return schedule
 
@@ -665,6 +672,14 @@ class Console:
         if target > 0 and self._route_require_feedback and not self._route_motion_seen:
             return None
         if target <= along + max(8.0, self._route_tolerance_mm):
+            # 停车拍之前先对齐：车头与所在段方向夹角超阈值时，先让路线控制器把车
+            # 转正（转向/纠偏命令照常下发），对齐后再停车拍。节点处即"先转向
+            # 下一段路线，再拍这个起点的照片"（2026-09-25 用户要求）。
+            heading_error_deg = abs(
+                math.degrees(wrap_angle(self.odom.theta - math.atan2(dy, dx)))
+            )
+            if heading_error_deg > PHOTO_ALIGN_DEG:
+                return None
             self._photo_cursor[segment_index] = cursor + 1
             return target
         return None
@@ -837,7 +852,7 @@ class Console:
         self._note_frame(self.client.command_for_key(cmd["key"]))
 
     def _route_loop(self):
-        note = "完成"
+        note = None
         deadline = time.monotonic() + 600.0
         try:
             while not self._route_stop.is_set():
@@ -846,6 +861,7 @@ class Console:
                         note = "连接断开"
                         break
                     if self._route_index >= len(self._route):
+                        note = "完成"
                         break
                     tx, ty = self._route[self._route_index]
                     start = (0.0, 0.0) if self._route_index == 0 else self._route[self._route_index - 1]
@@ -913,7 +929,12 @@ class Console:
         finally:
             with self._lock:
                 self._route_active = False
-                self._route_note = note
+                if note is not None:
+                    self._route_note = note
+                else:
+                    # 外部中止（用户停止/急停/断开）：保留中止方给出的原因，
+                    # 不能把 route.note 覆盖成"完成"（2026-09-25 实测）。
+                    note = self._route_note
                 self._route_stop.set()
                 self.watchdog.disarm()
                 self._last_cmd = None

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import socketserver
 import sys
 import tempfile
@@ -39,6 +40,33 @@ class RoutePhotoPlanTests(unittest.TestCase):
 
     def test_short_segment_has_no_photo_schedule(self):
         self.assertEqual(Console._build_photo_schedule([(1500.0, 0.0)]), {})
+
+    def test_photo_schedule_consolidates_node_point_to_next_segment(self):
+        """节点照片只留一份：本段终点交给下一段的 0mm 点（先对齐再拍）。"""
+        schedule = Console._build_photo_schedule([(1600.0, 0.0), (1600.0, 1600.0)])
+        self.assertEqual(schedule[0], [0.0, 300.0, 600.0, 900.0, 1200.0, 1500.0])
+        self.assertEqual(schedule[1], [0.0, 300.0, 600.0, 900.0, 1200.0, 1500.0, 1600.0])
+
+    def test_photo_schedule_keeps_segment_end_when_next_is_short(self):
+        """下一段太短没有拍照计划时，本段终点照保留，节点不丢拍。"""
+        schedule = Console._build_photo_schedule([(1600.0, 0.0), (1600.0, 600.0)])
+        self.assertEqual(schedule[0], [0.0, 300.0, 600.0, 900.0, 1200.0, 1500.0, 1600.0])
+        self.assertNotIn(1, schedule)
+
+    def test_photo_waits_until_heading_aligned_with_segment(self):
+        """拍照点先对齐：车头与所在段方向夹角超阈值时不拍，对齐后立即拍。"""
+        console = Console()
+        try:
+            with console._lock:
+                console._photo_schedule = {0: [0.0]}
+                console._photo_cursor = {0: 0}
+                console.odom.reset(theta=math.radians(90.0))  # 车头朝 +y，未对齐 +x 段
+                self.assertIsNone(console._photo_due_locked(0, (0.0, 0.0), (1000.0, 0.0)))
+                console.odom.reset(theta=math.radians(3.0))   # 对齐在容差内
+                self.assertEqual(
+                    console._photo_due_locked(0, (0.0, 0.0), (1000.0, 0.0)), 0.0)
+        finally:
+            console.close()
 
     def test_photo_pause_invalidates_previous_drive_command(self):
         console = Console()
@@ -437,6 +465,23 @@ class ConsoleHttpTest(unittest.TestCase):
             self.console._odom_tick()
             x = self.console.odom.x
         self.assertLessEqual(x, web_console.ODOM_MAX_STEP_SECONDS * 250.0 + 1.0)
+
+    def test_route_stop_keeps_reason_not_completed(self) -> None:
+        """用户停止路线后 route.note 必须是停止原因，不能被收尾覆盖成"完成"。"""
+        self.connect()
+        result = self.get("/api/route?wp=1200,0&vmax=600&tol=12&fb=0")
+        self.assertTrue(result["ok"])
+        time.sleep(0.3)
+        self.get("/api/route_stop")
+        deadline = time.monotonic() + 3.0
+        route = result["route"]
+        while time.monotonic() < deadline:
+            route = self.get("/api/odom")["route"]
+            if not route["active"]:
+                break
+            time.sleep(0.05)
+        self.assertFalse(route["active"])
+        self.assertEqual(route["note"], "用户停止路线")
 
     def test_route_stops_when_pulses_frozen_despite_drive_resends(self) -> None:
         """驱动帧按转向修正反复重发时，1s 脉冲超窗不能被重置而永不触发。
