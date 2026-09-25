@@ -1,7 +1,5 @@
 """客户端配置持久化（默认 ``~/.xiaor_remote_config.json``）。"""
 
-from __future__ import annotations
-
 import json
 import logging
 from pathlib import Path
@@ -11,10 +9,11 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path.home() / ".xiaor_remote_config.json"
 
-DEFAULTS: Dict[str, Any] = {
+DEFAULTS = {
     "host": "192.168.88.100",
     "port": 2001,
-    "swap_left_right": False,
+    "host_ips": {},  # .local 名字 -> 最近一次解析成功的 IP（Windows mDNS 不稳时兜底）
+    "gimbal_home": {"pan": 90, "tilt": 90},
     "stop_on_focus_loss": True,
     "left_speed": 100,
     "right_speed": 100,

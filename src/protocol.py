@@ -18,8 +18,6 @@
 所有函数返回真实的 ``bytes``，不要发送 ASCII 字符串 "FF000100FF"。
 """
 
-from __future__ import annotations
-
 from typing import Iterable, List, Optional
 
 # ---------------------------------------------------------------------------
@@ -36,8 +34,10 @@ MOTION_BACKWARD = 0x02
 MOTION_LEFT = 0x03
 MOTION_RIGHT = 0x04
 
-SPEED_LEFT = 0x01
-SPEED_RIGHT = 0x02
+# 2026-09-19 实车校准：只有速度通道接反（FF 02 01/ENA 实为物理右轮、
+# FF 02 02/ENB 实为物理左轮）。方向帧 MOTION_LEFT/RIGHT 已与实车一致，不互换。
+SPEED_LEFT = 0x02
+SPEED_RIGHT = 0x01
 
 SERVO_MIN_ANGLE = 15
 SERVO_MAX_ANGLE = 160
@@ -104,7 +104,7 @@ def clamp_speed(percent: int) -> int:
 def speed_command(side: int, percent: int) -> bytes:
     """``side`` 为 :data:`SPEED_LEFT` 或 :data:`SPEED_RIGHT`；``percent`` 0-100。"""
     if side not in (SPEED_LEFT, SPEED_RIGHT):
-        raise ValueError("speed side must be SPEED_LEFT(1) or SPEED_RIGHT(2)")
+        raise ValueError("speed side must be SPEED_LEFT or SPEED_RIGHT")
     return build_frame(0x02, side, clamp_speed(percent))
 
 
@@ -151,7 +151,7 @@ def read_voltage_command() -> bytes:
 
 def packet_hex(data: bytes) -> str:
     """``b'\\xff\\x00\\x01\\x00\\xff'`` -> ``"FF 00 01 00 FF"``。"""
-    return " ".join(f"{b:02X}" for b in data)
+    return " ".join("%02X" % b for b in data)
 
 
 def packet_hex_compact(data: bytes) -> str:
@@ -165,8 +165,8 @@ def parse_stream(data: bytes) -> List[bytes]:
     规则（见 wifirobots.py 主循环）：``FF`` 为起止符；两个 ``FF`` 之间
     恰好有 3 个字节才算一帧，否则丢弃。用于测试、日志解析与探测工具。
     """
-    frames: List[bytes] = []
-    middle: List[int] = []
+    frames = []
+    middle = []
     in_frame = False
     for byte in data:
         if byte == FRAME_START:

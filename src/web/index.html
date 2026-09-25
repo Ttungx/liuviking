@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小R小车控制台</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <h1>小R小车控制台</h1>
+  <div class="conn">
+    <label>IP <input id="host" placeholder="car.local" size="14"></label>
+    <label>端口 <input id="port" type="number" value="2001" min="1" max="65535"></label>
+    <button id="connectBtn" class="primary">连接</button>
+  </div>
+  <div class="status"><span id="dot" class="dot"></span><span id="statusText">未连接</span></div>
+  <button id="claimBtn" class="primary" hidden>取得控制</button>
+  <div id="telemetry" class="telemetry">发送 0 帧</div>
+</header>
+
+<main>
+  <div class="col">
+    <section class="card drive">
+      <h2>运动</h2>
+      <div class="pad">
+        <button class="cap" data-k="w">▲<span>W 前进</span></button>
+        <button class="cap" data-k="a">◀<span>A 左转</span></button>
+        <div class="cap stop" id="stopBtn">STOP<span>Space</span></div>
+        <button class="cap" data-k="d">▶<span>D 右转</span></button>
+        <button class="cap" data-k="s">▼<span>S 后退</span></button>
+      </div>
+      <div class="readout">
+        <strong id="direction">停止</strong>
+        <span id="frame" class="telemetry">等待指令</span>
+      </div>
+      <div class="row tight">
+        <span class="muted">转向</span>
+        <button id="turnMode" class="toggle">原地</button>
+      </div>
+      <p class="hint">W/S/A/D 按住持续、松开即停 · Space 急停 · Esc 停止并断开<br>
+        原地 = A/D 单轮反转原地转；弧线 = A/D 边走边转（内侧轮 58%、外侧轮 100%）</p>
+    </section>
+
+    <section class="card speed">
+      <h2>轮速与校准</h2>
+      <label class="slider">左轮 <input id="leftSpeed" type="range" min="0" max="100" value="100"><output>100%</output></label>
+      <label class="slider">右轮 <input id="rightSpeed" type="range" min="0" max="100" value="100"><output>100%</output></label>
+      <div class="row">
+        <button id="applySpeed" class="primary">应用速度</button>
+      </div>
+    </section>
+
+    <section class="card gimbal">
+      <h2>云台与车灯 <span id="gimbalPos" class="telemetry">H 90° · V 90°</span></h2>
+      <div class="gimbal-body">
+        <div class="gimbal-pad" id="gimbalPad"><span class="knob" id="gimbalKnob"></span></div>
+        <div class="gimbal-side">
+          <label class="slider">水平 <input id="panRange" type="range" min="0" max="185" value="90"><output>90°</output></label>
+          <label class="slider">垂直 <input id="tiltRange" type="range" min="78" max="170" value="90"><output>90°</output></label>
+          <div class="row tight">
+            <button id="panMinus">水平 −</button><button id="panPlus">水平 +</button>
+            <button id="tiltMinus">垂直 −</button><button id="tiltPlus">垂直 +</button>
+          </div>
+          <div class="row tight">
+            <button id="gimbalHome" class="primary">归位</button>
+            <button id="setHome">设为归位点</button>
+            <button id="lightBtn" class="toggle">车灯：关</button>
+          </div>
+        </div>
+      </div>
+      <p class="hint">拖动左侧触控板或滑块即可无级调节；方向键 ↑↓ 调垂直、←→ 调水平，按住连续动作。
+        水平 + 为左转、垂直 − 为上仰（通道 7/8 由服务端记录）。</p>
+      <div class="row">
+        <label class="inline">其它舵机
+          <select id="servoNum">
+            <option>1</option><option>2</option><option>3</option><option>4</option>
+            <option>5</option><option>6</option><option>7</option><option>8</option>
+          </select>
+        </label>
+        <label class="slider">角度 <input id="servoAngle" type="range" min="15" max="160" value="90"><output>90°</output></label>
+        <span class="btn-group">
+          <button id="applyServo">应用</button>
+          <button id="centerServo">复位 90°</button>
+        </span>
+      </div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card video">
+      <h2>视频
+        <label class="inline"><input id="videoOn" type="checkbox"> 启用</label>
+        <label class="inline">端口 <input id="videoPort" type="number" value="8080" min="1" max="65535"></label>
+        <label class="inline">路径 <input id="videoPath" value="/?action=stream" size="14"></label>
+      </h2>
+      <div class="screen">
+        <img id="videoImg" alt="">
+        <p id="videoHint">视频未启用</p>
+      </div>
+    </section>
+
+    <section class="card map">
+      <h2>轨迹与路线
+        <label class="inline"><input id="odomOn" type="checkbox"> 启用</label>
+       <span id="odomPose" class="telemetry">x 0 · y 0 · θ 0°</span>
+        <span id="odomPose" class="telemetry">x 0 · y 0 · θ 0° · 开环估计</span>
+      </h2>
+      <canvas id="mapCanvas" height="240"></canvas>
+      <div class="row tight">
+        <label class="inline">轮距 <input id="trackWidth" type="number" value="120" min="40" max="400" step="1" size="4"> mm</label>
+        <label class="inline">满速 <input id="vmax" type="number" value="250" min="30" max="2000" step="10" size="5"> mm/s</label>
+        <label class="inline">左轮增益 <input id="leftScale" type="number" value="1" min="0.1" max="3" step="0.01" size="4"></label>
+        <label class="inline">右轮增益 <input id="rightScale" type="number" value="1" min="0.1" max="3" step="0.01" size="4"></label>
+        <label class="inline">死区 <input id="deadzone" type="number" value="0" min="0" max="90" step="1" size="3"> %</label>
+        <label class="inline">路点容差 <input id="routeTol" type="number" value="12" min="5" max="40" step="1" size="4"> mm</label>
+        <label class="inline">初始朝向 <input id="routeHeading" type="number" value="0" min="-180" max="180" step="1" size="4"> °</label>
+      </div>
+      <div class="row tight">
+        <button id="routeStart" class="primary">开始路线</button>
+        <button id="routeStop">停止路线</button>
+        <button id="routeClear">清空路线</button>
+        <button id="odomReset">重置原点与轨迹</button>
+        <button id="mapReset">重置画布视图</button>
+        <label class="inline" title="本车无编码器：勾选后按开环估算执行（轨迹不代表真实位置）；取消勾选则要求车端脉冲反馈，无反馈会停车且不继续拍照"><input id="routeOpenLoop" type="checkbox"> 无反馈时继续（开放环）</label>
+      </div>
+      <p class="hint" id="routeNote">鼠标直接画路线：<b>左键按住拖拽</b>自由绘制、<b>右键逐点</b>连线路点；滚轮缩放，行驶中也可用 <b>Ctrl + 左键</b>拖动画布。网格单元格边长 60cm。
+       开始路线会把当前位置当原点、车头朝地图右方（+x）；先标定：满速＝100% 直行 3 秒测距离÷3，轮距＝左右轮中心距。蓝线是开环估计轨迹，不代表车体真实位置。</p>
+    </section>
+
+    <section class="card logs">
+      <h2>日志 <button id="clearLog" class="tiny">清空</button></h2>
+      <pre id="log"></pre>
+    </section>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

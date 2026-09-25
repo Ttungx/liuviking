@@ -10,8 +10,6 @@
 - 纯 Python 实现，不依赖 Qt，便于单元测试与命令行工具复用。
 """
 
-from __future__ import annotations
-
 import logging
 import socket
 import threading
@@ -47,20 +45,19 @@ class RobotClient:
         status_callback: Optional[StatusCallback] = None,
         log_callback: Optional[LogCallback] = None,
     ) -> None:
-        self._sock: Optional[socket.socket] = None
+        self._sock = None
         self._send_lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._state = ConnectionState.DISCONNECTED
         self._detail = ""
-        self._host: Optional[str] = None
+        self._host = None
         self._port = self.DEFAULT_PORT
         self._heartbeat_stop = threading.Event()
-        self._heartbeat_thread: Optional[threading.Thread] = None
-        self._connect_thread: Optional[threading.Thread] = None
+        self._heartbeat_thread = None
+        self._connect_thread = None
 
         self.status_callback = status_callback
         self.log_callback = log_callback
-        self.swap_left_right = False
         self.packets_sent = 0
 
     # ------------------------------------------------------------------
@@ -89,11 +86,27 @@ class RobotClient:
     def is_connected(self) -> bool:
         return self.state is ConnectionState.CONNECTED
 
+    @property
+    def peer_ip(self):
+        """当前 TCP 连接的对端 IP；未连接返回 None。
+
+        浏览器加载 MJPEG 视频是直连小车 8080，如果地址写 ``car.local``，
+        系统代理（Clash 等）解析不了 .local 会 502。用已连上的真实 IP 最稳。
+        """
+        with self._send_lock:
+            sock = self._sock
+            if sock is None:
+                return None
+            try:
+                return sock.getpeername()[0]
+            except OSError:
+                return None
+
     def _set_state(self, state: ConnectionState, detail: str = "") -> None:
         with self._state_lock:
             self._state = state
             self._detail = detail
-        logger.info("连接状态: %s%s", state.value, f" ({detail})" if detail else "")
+        logger.info("连接状态: %s%s", state.value, (" (%s)" % detail) if detail else "")
         if self.status_callback is not None:
             try:
                 self.status_callback(state, detail)
@@ -118,20 +131,20 @@ class RobotClient:
         timeout = float(timeout if timeout is not None else self.DEFAULT_TIMEOUT)
         self._teardown(send_stop=False)
 
-        self._set_state(ConnectionState.CONNECTING, f"{host}:{port}")
+        self._set_state(ConnectionState.CONNECTING, "%s:%s" % (host, port))
         try:
             sock = socket.create_connection((host, port), timeout=timeout)
             sock.settimeout(self.SEND_TIMEOUT)
         except OSError as exc:
-            self._set_state(ConnectionState.ERROR, f"连接失败: {exc}")
-            self._emit(f"连接失败 {host}:{port} -> {exc}")
+            self._set_state(ConnectionState.ERROR, "连接失败: %s" % exc)
+            self._emit("连接失败 %s:%s -> %s" % (host, port, exc))
             return False
 
         with self._send_lock:
             self._sock = sock
         self._host, self._port = host, port
-        self._set_state(ConnectionState.CONNECTED, f"{host}:{port}")
-        self._emit(f"已连接 {host}:{port}，先发送 STOP")
+        self._set_state(ConnectionState.CONNECTED, "%s:%s" % (host, port))
+        self._emit("已连接 %s:%s，先发送 STOP" % (host, port))
         self.send_raw(protocol.STOP, note="连接后默认 STOP")
         self._start_heartbeat()
         return True
@@ -183,19 +196,19 @@ class RobotClient:
     def send_raw(self, packet: bytes, note: str = "") -> bool:
         """线程安全地发送一帧；失败会把连接置为 ERROR 并返回 False。"""
         if not protocol.is_valid_frame(packet):
-            raise ValueError(f"非法帧: {packet!r}")
+            raise ValueError("非法帧: %r" % (packet,))
         with self._send_lock:
             sock = self._sock
             if sock is None:
-                self._emit(f"未连接，丢弃 {protocol.packet_hex(packet)}")
+                self._emit("未连接，丢弃 %s" % protocol.packet_hex(packet))
                 return False
             try:
                 sock.sendall(packet)
             except OSError as exc:
-                self._handle_socket_error(f"发送失败: {exc}")
+                self._handle_socket_error("发送失败: %s" % exc)
                 return False
             self.packets_sent += 1
-        suffix = f" ({note})" if note else ""
+        suffix = (" (%s)" % note) if note else ""
         logger.info("发送 %s%s", protocol.packet_hex(packet), suffix)
         return True
 
@@ -217,21 +230,19 @@ class RobotClient:
     # ------------------------------------------------------------------
 
     def command_for_key(self, key: Optional[str]) -> bytes:
-        """方向键 -> 帧（含左右互换校准）。非法/空键返回 STOP。"""
+        """方向键 -> 帧。非法/空键返回 STOP。
+
+        方向帧不做左右互换：实车接线 A=物理右轮、B=物理左轮，固件
+        TurnLeft(A 前/B 后)/TurnRight 本身就是正确的物理转向（2026-09-19 回退）。
+        """
         key = (key or "").lower()
         if key not in protocol.MOTION_BY_KEY:
             return protocol.STOP
-        packet = protocol.MOTION_BY_KEY[key]
-        if self.swap_left_right:
-            if packet == protocol.LEFT:
-                return protocol.RIGHT
-            if packet == protocol.RIGHT:
-                return protocol.LEFT
-        return packet
+        return protocol.MOTION_BY_KEY[key]
 
-    def send_direction(self, key: Optional[str], note: str = "") -> bool:
+    def send_direction(self, key, note=""):
         packet = self.command_for_key(key)
-        label = f"方向 {key.upper()}" if key else "STOP"
+        label = ("方向 %s" % key.upper()) if key else "STOP"
         return self.send_raw(packet, note=note or label)
 
     def stop(self, note: str = "STOP") -> bool:
@@ -241,13 +252,13 @@ class RobotClient:
         side_name = "左" if side == protocol.SPEED_LEFT else "右"
         return self.send_raw(
             protocol.speed_command(side, percent),
-            note=f"{side_name}侧速度 {protocol.clamp_speed(percent)}%",
+            note="%s侧速度 %s%%" % (side_name, protocol.clamp_speed(percent)),
         )
 
     def send_servo(self, servo_num: int, angle: int) -> bool:
         return self.send_raw(
             protocol.servo_command(servo_num, angle),
-            note=f"舵机 {servo_num} -> {protocol.clamp_angle(angle)}°",
+            note="舵机 %s -> %s°" % (servo_num, protocol.clamp_angle(angle)),
         )
 
     # ------------------------------------------------------------------

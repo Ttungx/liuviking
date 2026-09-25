@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +86,23 @@ class JpegFrameIteratorTests(unittest.TestCase):
 
     def test_empty_stream(self):
         self.assertEqual(list(video_client.iter_jpeg_frames(io.BytesIO(b""))), [])
+
+
+class SnapshotTests(unittest.TestCase):
+    def test_fetch_snapshot_reads_jpeg(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = FAKE_JPEG_A
+        with mock.patch("src.video_client.urllib.request.urlopen", return_value=response):
+            self.assertEqual(video_client.fetch_snapshot("http://127.0.0.1:8080/?action=snapshot"), FAKE_JPEG_A)
+
+    def test_fetch_snapshot_rejects_non_jpeg(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"not an image"
+        with mock.patch("src.video_client.urllib.request.urlopen", return_value=response):
+            with self.assertRaises(ValueError):
+                video_client.fetch_snapshot("http://127.0.0.1:8080/?action=snapshot")
 
 
 if __name__ == "__main__":

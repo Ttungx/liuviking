@@ -22,6 +22,8 @@ import web_controller as wc  # noqa: E402
 
 STOP = b"\xff\x00\x00\x00\xff"
 FORWARD = b"\xff\x00\x01\x00\xff"
+# 2026-09-19 定版：方向帧不互换（实车 A=右轮/B=左轮，固件 TurnLeft 本身=车左转），
+# 只有速度通道互换（见 web_controller.py 的 SPEED_LEFT/RIGHT）。
 LEFT = b"\xff\x00\x03\x00\xff"
 HEARTBEAT = b"\xff\xef\xef\xee\xff"
 
@@ -121,11 +123,12 @@ class RobotBridgeTests(unittest.TestCase):
         self.assertEqual(frames[-1], STOP)
 
     def test_speed_frames(self):
+        # 速度通道按实车接线：语义 left -> 0x02 通道（ENB=物理左轮）
         self.bridge.speed("sid-a", "left", 0)
         self.bridge.speed("sid-a", "right", 100)
         frames = self.server.wait_frames(3)
-        self.assertEqual(frames[1], b"\xff\x02\x01\x00\xff")
-        self.assertEqual(frames[2], b"\xff\x02\x02\x64\xff")
+        self.assertEqual(frames[1], b"\xff\x02\x02\x00\xff")
+        self.assertEqual(frames[2], b"\xff\x02\x01\x64\xff")
 
     def test_servo_frames(self):
         self.bridge.servo("sid-a", 1, 90)
@@ -191,7 +194,9 @@ class RobotBridgeTests(unittest.TestCase):
         self.assertEqual(self.bridge.status()["robot"], "connected")
 
     def test_motion_timeout_stops_but_stays_connected(self):
-        # 运动命令超过 motion_timeout 没刷新 -> 自动 STOP + 恢复默认速度，但连接保留
+        # 运动命令超过 motion_timeout 没刷新 -> 自动 STOP，但连接保留
+        # 2026-09-19：不再在超时后立刻复位 100/100（避免拆穿当前转向），
+        # 对称速度由下次直行前的前端 applyStraight 负责。
         self.bridge.motion_timeout = 0.3
         self.bridge.session_timeout = 30.0
         self.bridge.command("sid-a", "w")
@@ -200,13 +205,10 @@ class RobotBridgeTests(unittest.TestCase):
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             frames = self.server.frames()
-            if len(frames) >= 5:
+            if len(frames) >= 3:
                 break
             time.sleep(0.05)
         self.assertEqual(frames[2], STOP)
-        # 弧线转向可能留下不对称速度，超时停车后必须恢复 100/100
-        self.assertEqual(frames[3], b"\xff\x02\x01\x64\xff")
-        self.assertEqual(frames[4], b"\xff\x02\x02\x64\xff")
         status = self.bridge.status()
         self.assertEqual(status["robot"], "connected")  # 只停运动，不断开
         self.assertIsNone(status["last"])
@@ -293,6 +295,13 @@ class HttpApiTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual(status, 200)
         self.assertEqual(payload["robot"], "disconnected")
+
+    def test_motion_feedback_endpoint_reports_i2c_availability(self):
+        status, body = self.get("/api/motion_feedback")
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertIn("available", payload)
+        self.assertFalse(payload["available"])
 
     def test_cmd_and_stop_endpoints(self):
         status, body = self.get("/cmd?k=w&sid=phone1")

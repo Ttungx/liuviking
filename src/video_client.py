@@ -8,8 +8,6 @@
 纯解析逻辑（``iter_jpeg_frames``）不依赖 Qt，可单元测试。
 """
 
-from __future__ import annotations
-
 import logging
 import threading
 import urllib.error
@@ -21,6 +19,19 @@ logger = logging.getLogger(__name__)
 #: mjpg-streamer output_http 的默认分隔符
 DEFAULT_BOUNDARY = b"boundarydonotcross"
 DEFAULT_PATH = "/?action=stream"
+DEFAULT_SNAPSHOT_PATH = "/?action=snapshot"
+
+
+def fetch_snapshot(url: str, timeout: float = 3.0, max_bytes: int = 16 * 1024 * 1024) -> bytes:
+    """读取一次 JPEG 快照，供路线拍照使用。"""
+    request = urllib.request.Request(url, headers={"User-Agent": "xiaor-remote/0.1"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = response.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError("快照超过 %d bytes" % max_bytes)
+    if not data.startswith(b"\xff\xd8"):
+        raise ValueError("摄像头返回的不是 JPEG")
+    return data
 
 
 def extract_boundary(content_type: str) -> bytes:
@@ -90,7 +101,7 @@ class MJPEGReader:
         self.on_frame = on_frame
         self.on_status = on_status
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread = None
         self._response = None
 
     @property
@@ -126,7 +137,7 @@ class MJPEGReader:
                 logger.exception("视频状态回调异常")
 
     def _run(self) -> None:
-        self._emit_status(f"连接 {self.url}")
+        self._emit_status("连接 %s" % self.url)
         try:
             request = urllib.request.Request(self.url, headers={"User-Agent": "xiaor-remote/0.1"})
             response = urllib.request.urlopen(request, timeout=self.timeout)
@@ -145,7 +156,7 @@ class MJPEGReader:
                 self._emit_status("视频流结束")
         except (OSError, urllib.error.URLError, ValueError) as exc:
             if not self._stop_event.is_set():
-                self._emit_status(f"视频不可用: {exc}")
+                self._emit_status("视频不可用: %s" % exc)
         finally:
             response = self._response
             self._response = None

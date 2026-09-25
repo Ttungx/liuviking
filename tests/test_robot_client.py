@@ -1,7 +1,7 @@
 """RobotClient 与本地假机器人服务器的端到端协议测试。
 
 用 ``socketserver`` 起一个本机 TCP 服务冒充原厂 2001 端口，验证：
-连接即 STOP、方向帧字节、断开前 STOP、心跳、错误状态、左右互换校准。
+连接即 STOP、方向帧字节（不互换）、断开前 STOP、心跳、错误状态。
 """
 
 from __future__ import annotations
@@ -107,14 +107,14 @@ class RobotClientTests(unittest.TestCase):
         frames = self.server.wait_frames(3)
         self.assertEqual(frames[-1], protocol.STOP)
 
-    def test_swap_left_right_calibration(self):
-        self.client.swap_left_right = True
+    def test_turn_frames_not_inverted(self):
+        # 2026-09-19 定版：方向帧不互换（固件 TurnLeft/Right 与实车接线已一致）
         self.client.connect("127.0.0.1", self.server.port, timeout=1.0)
         self.client.send_direction("a")
         self.client.send_direction("d")
         frames = self.server.wait_frames(3)
-        self.assertEqual(frames[1], protocol.RIGHT)
-        self.assertEqual(frames[2], protocol.LEFT)
+        self.assertEqual(frames[1], protocol.LEFT)
+        self.assertEqual(frames[2], protocol.RIGHT)
 
     def test_invalid_key_maps_to_stop(self):
         self.client.connect("127.0.0.1", self.server.port, timeout=1.0)

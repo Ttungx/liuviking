@@ -43,13 +43,14 @@ class MotionFrameTests(unittest.TestCase):
 
 class SpeedTests(unittest.TestCase):
     def test_speed_values(self):
-        self.assertEqual(protocol.speed_command(protocol.SPEED_LEFT, 100).hex(), "ff020164ff")
-        self.assertEqual(protocol.speed_command(protocol.SPEED_RIGHT, 0).hex(), "ff020200ff")
-        self.assertEqual(protocol.speed_command(protocol.SPEED_LEFT, 50).hex(), "ff020132ff")
+        # 通道按实车接线：left -> 0x02（ENB=物理左轮），right -> 0x01（ENA=物理右轮）
+        self.assertEqual(protocol.speed_command(protocol.SPEED_LEFT, 100).hex(), "ff020264ff")
+        self.assertEqual(protocol.speed_command(protocol.SPEED_RIGHT, 0).hex(), "ff020100ff")
+        self.assertEqual(protocol.speed_command(protocol.SPEED_LEFT, 50).hex(), "ff020232ff")
 
     def test_speed_clamped_to_0_100(self):
-        self.assertEqual(protocol.speed_command(protocol.SPEED_LEFT, 250).hex(), "ff020164ff")
-        self.assertEqual(protocol.speed_command(protocol.SPEED_RIGHT, -5).hex(), "ff020200ff")
+        self.assertEqual(protocol.speed_command(protocol.SPEED_LEFT, 250).hex(), "ff020264ff")
+        self.assertEqual(protocol.speed_command(protocol.SPEED_RIGHT, -5).hex(), "ff020100ff")
 
     def test_invalid_side_raises(self):
         with self.assertRaises(ValueError):

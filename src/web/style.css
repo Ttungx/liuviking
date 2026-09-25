@@ -1,0 +1,369 @@
+/* 小R小车控制台配色。
+ *
+ * 设计变量取自 https://github.com/Ttungx/qoder2222api 的 web/style.css
+ * （中性暖灰 + 靛蓝主色 + 半透明白描边）。差异处：
+ *   - 不 @import Google Fonts：小车热点下没有外网，字体拿不到会拖慢首屏，
+ *     只把 Inter 放在字体栈最前面，装了就用、没装就回落系统字体；
+ *   - STOP / 连接错误这类安全语义保持实心高对比，不用低饱和的柔和色。
+ */
+
+:root {
+  --bg: #171717;
+  --card: #242424;
+  --surface: #2b2b2b;
+  --raised: #3a3a3a;
+  --hover: #313131;
+  --recessed: #131313;
+
+  --text: #f1f1f1;
+  --text-2: #c9c9c9;
+  --muted: #9a9a9a;
+  --dim: #737373;
+  --disabled: #5f5f5f;
+
+  --line: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --line-strong: rgba(255, 255, 255, 0.12);
+
+  --primary: #2d45e2;
+  --primary-hover: #3f56f0;
+  --primary-soft: rgba(45, 69, 226, 0.18);
+  --primary-text: #93a8ff;
+
+  --ok: #22c55e;
+  --ok-text: #6ee7a0;
+  --warn: #eab308;
+  --warn-text: #fbbf24;
+  --danger: #ef4444;
+  --danger-text: #fca5a5;
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-card: 16px;
+
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.22);
+  --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "Microsoft YaHei UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 顶栏 ---------- */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+
+.conn { display: flex; align-items: center; gap: 8px; }
+.conn label { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+
+.status { display: flex; align-items: center; gap: 7px; color: var(--text-2); font-size: 13px; }
+.telemetry { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-left: auto; }
+
+.dot { width: 11px; height: 11px; border-radius: 50%; background: var(--disabled); flex: none; }
+.dot.connected { background: var(--ok); }
+.dot.connecting { background: var(--warn); }
+.dot.error { background: var(--danger); }
+
+/* ---------- 布局：左操作 / 右视频+日志 两栏 ---------- */
+
+main {
+  display: grid;
+  grid-template-columns: minmax(320px, 5fr) minmax(420px, 7fr);
+  gap: 14px;
+  padding: 16px 18px 30px;
+  align-items: start;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 14px 16px 16px;
+  box-shadow: var(--shadow-soft);
+}
+
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.card h2 .telemetry { margin-left: auto; }
+
+.row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.row.tight { gap: 8px; }
+.btn-group { display: inline-flex; gap: 8px; flex: none; }
+
+.speed { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.speed .row { margin-top: 4px; }
+
+/* ---------- 方向键盘 ---------- */
+
+.pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 66px);
+  gap: 9px;
+}
+
+.cap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.1;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;   /* 触屏按住驾驶时不被浏览器手势/滚动抢走 */
+}
+.cap span { font-size: 12px; font-weight: 500; color: var(--muted); }
+.cap.active {
+  background: var(--primary);
+  border-color: var(--primary-hover);
+  color: #fff;
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.cap.active span { color: #dbe2ff; }
+.pad.off .cap { opacity: .38; }
+
+/* 3x3 十字布局：四个角留空 */
+.cap[data-k="w"] { grid-area: 1 / 2; }
+.cap[data-k="a"] { grid-area: 2 / 1; }
+.cap[data-k="d"] { grid-area: 2 / 3; }
+.cap[data-k="s"] { grid-area: 3 / 2; }
+
+.cap.stop {
+  grid-area: 2 / 2;
+  background: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: var(--radius-lg);
+  color: var(--danger-text);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cap.stop:hover { background: rgba(239, 68, 68, 0.26); }
+.cap.stop:active { background: var(--danger); color: #fff; }
+
+.readout { display: flex; align-items: baseline; gap: 12px; margin-top: 14px; }
+.readout strong { font-size: 19px; font-weight: 600; }
+.readout strong.active { color: var(--primary-text); }
+.readout .telemetry { margin-left: auto; }
+
+.hint { margin: 8px 0 0; font-size: 12px; color: var(--dim); }
+.muted { color: var(--muted); font-size: 13px; }
+.drive .row.tight { margin-top: 12px; }
+
+/* ---------- 云台：二维触控板无级调节 ---------- */
+
+.gimbal-body { display: flex; gap: 16px; align-items: stretch; }
+
+.gimbal-pad {
+  position: relative;
+  flex: none;
+  width: 188px;
+  height: 188px;
+  background:
+    linear-gradient(var(--line-strong) 1px, transparent 1px) 0 50% / 100% 50%,
+    linear-gradient(90deg, var(--line-strong) 1px, transparent 1px) 50% 0 / 50% 100%,
+    var(--recessed);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M12 1v22M1 12h22' stroke='white' stroke-width='2'/%3E%3C/svg%3E") 12 12, crosshair;
+  touch-action: none;
+}
+.gimbal-pad:active { border-color: var(--primary-hover); }
+.gimbal-pad.off { opacity: .38; cursor: not-allowed; }
+
+.knob {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 4px var(--primary-soft);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.gimbal-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gimbal .hint { margin: 12px 0 0; }
+.gimbal .row:last-child { margin-top: 12px; }
+
+/* ---------- 轨迹与路线 ---------- */
+
+.map canvas {
+  display: block;
+  width: 100%;
+  height: 240px;
+  background: var(--recessed);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M12 1v22M1 12h22' stroke='white' stroke-width='2'/%3E%3C/svg%3E") 12 12, crosshair;
+  touch-action: none;
+}
+.map canvas.panning { cursor: grabbing; }
+.map.off canvas { opacity: .35; cursor: not-allowed; }
+.map .row.tight { margin-top: 8px; }
+.map input[type="number"] { width: 68px; }
+.map textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  background: var(--recessed);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 9px;
+  resize: vertical;
+}
+.map textarea:focus { outline: none; border-color: var(--primary-hover); }
+.map .hint { margin: 8px 0 0; }
+
+/* ---------- 视频 ---------- */
+
+.video h2 { flex-wrap: wrap; }
+
+.screen {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  min-height: 300px;
+  background: var(--recessed);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.screen img { max-width: 100%; max-height: 100%; display: none; }
+.screen img.show { display: block; }
+.screen p { position: absolute; margin: 0; color: var(--dim); font-size: 13px; pointer-events: none; }
+
+/* ---------- 控件 ---------- */
+
+button {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 7px 15px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+button:hover { background: var(--hover); }
+button:active { background: var(--raised); }
+button.primary { background: var(--primary); border-color: var(--primary-hover); color: #fff; }
+button.primary:hover { background: var(--primary-hover); }
+button.toggle.on { background: var(--primary); border-color: var(--primary-hover); color: #fff; }
+button.tiny { padding: 3px 10px; font-size: 12px; }
+button:disabled {
+  background: var(--surface);
+  border-color: var(--line-soft);
+  color: var(--disabled);
+  cursor: not-allowed;
+}
+
+input, select {
+  background: var(--recessed);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 5px 9px;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--primary-hover);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+input[type=number] { width: 78px; }
+input[type=range] { flex: 1 1 auto; width: 190px; min-width: 70px; max-width: 190px; accent-color: var(--primary); padding: 0; background: none; border: none; box-shadow: none; }
+input[type=checkbox] { accent-color: var(--primary); width: 15px; height: 15px; }
+
+label.inline { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+label.slider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; min-width: 0; }
+label.slider output { font-family: var(--mono); font-size: 12px; color: var(--text-2); min-width: 46px; }
+
+/* ---------- 日志 ---------- */
+
+.logs h2 button { margin-left: auto; }
+#log {
+  margin: 0;
+  height: 300px;
+  overflow: auto;
+  background: var(--recessed);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 9px 11px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+  white-space: pre;
+}
+#log .WARNING { color: var(--warn-text); }
+#log .ERROR, #log .CRITICAL { color: var(--danger-text); }
+#log .DEBUG { color: var(--disabled); }
+
+/* ---------- 窄屏 ---------- */
+
+@media (max-width: 1000px) {
+  main { grid-template-columns: 1fr; }
+  header { flex-wrap: wrap; }
+  .telemetry { margin-left: 0; }
+  .gimbal-body { flex-direction: column; }
+  .gimbal-pad { width: 100%; height: 200px; }
+  .screen { min-height: 220px; }
+  #log { height: 220px; }
+}

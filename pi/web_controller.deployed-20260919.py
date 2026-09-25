@@ -29,12 +29,6 @@
 本地调试（Windows）::
 
     python pi/web_controller.py --port 8082
-
-Agent 调试（程序化调用，人不需要）::
-
-    先 /api/claim 拿控制权，再 /api/move 有界运动、/api/telemetry 读超声。
-    /api/help 返回全部端点与字段语义，调用方读它而不是读这份源码。
-    2001 是单客户端（listen(1)）：同一时刻只能有一个控制端。
 """
 
 from __future__ import print_function
@@ -42,7 +36,6 @@ from __future__ import print_function
 import json
 import os
 import socket
-import struct
 import sys
 import threading
 import time
@@ -70,18 +63,12 @@ HEARTBEAT = b"\xff\xef\xef\xee\xff"
 MOTION_KEYS = {
     "w": b"\xff\x00\x01\x00\xff",
     "s": b"\xff\x00\x02\x00\xff",
-    # 方向帧不互换：固件 TurnLeft(A 前/B 后) 在 A=物理右轮、B=物理左轮 的接线下
-    # 本身就是车左转（右轮前/左轮后=逆时针），TurnRight 同理。2026-09-19 曾把
-    # A/D 帧与速度通道一并互换，导致原地转向左右镜像，已回退。
     "a": b"\xff\x00\x03\x00\xff",
     "d": b"\xff\x00\x04\x00\xff",
 }
 
-# 2026-09-19 实车校准：只有速度通道接反（协议 FF 02 01/ENA 实为物理右轮、
-# FF 02 02/ENB 实为物理左轮），弧线差速给反。仅互换速度通道，语义 "left"
-# 永远对应物理左轮；方向帧与本体转向不受影响。
-SPEED_LEFT = 0x02
-SPEED_RIGHT = 0x01
+SPEED_LEFT = 0x01
+SPEED_RIGHT = 0x02
 # 异常停车后把左右速度恢复到固件默认 100/100（弧线转向会留下不对称速度）
 SPEED_DEFAULT = 100
 
@@ -94,19 +81,6 @@ GIMBAL_TILT = 8
 GIMBAL_AXES = {GIMBAL_PAN: "pan", GIMBAL_TILT: "tilt"}
 GIMBAL_LIMITS = {"pan": (0, 185), "tilt": (78, 170)}
 SERVO_MIN = 15
-
-# ---------------------------------------------------------------------------
-# Agent 调试端点（面向程序化调用：字段自描述、有界动作、遥测闭环）
-#   /api/help        全部端点与字段语义
-#   /api/claim       取得控制权，可选 lease 秒持有（防止思考期间被抢）
-#   /api/move        有界运动：单发一次方向帧，ms 后自动 STOP
-#   /api/telemetry   超声测距流：进固件 13-05 模式，收样后立即退出
-# 测距模式下固件只回数据、不处理运动帧，所以 telemetry 必须"进→收样→退"。
-# ---------------------------------------------------------------------------
-MOVE_MAX_MS = 5000      # 单次有界运动上限，再久请分段再调
-SENSE_MAX_S = 5.0       # 单次测距窗口上限
-SENSE_START = b"\xff\x13\x05\x00\xff"   # 固件进超声波测距上报模式
-SENSE_END = b"\xff\x13\x00\x00\xff"     # 退出，否则运动帧不被处理
 SERVO_MAX = 160
 GIMBAL_POSE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "gimbal_pose.json"
@@ -149,52 +123,6 @@ class BusyError(Exception):
     """另一个浏览器会话正在控制。"""
 
 
-# 2001 单客户端（固件 listen(1)）：第二个客户端的 TCP 连接会进内核 backlog，
-# 指令静默排队，等占用者会话超时（3s）后才被执行——上层看到的"ok"全是假的。
-# OccupiedError 继承 socket.error，让所有既有 except socket.error 分支直接复用。
-class OccupiedError(socket.error):
-    """另一个控制端正占用 2001，本次连接排队也不会被执行。"""
-
-
-def _hex_ipv4(hex_str):
-    """/proc/net/tcp 的小端十六进制 -> 点分十进制。"""
-    try:
-        return socket.inet_ntoa(struct.pack("<I", int(hex_str, 16)))
-    except (struct.error, ValueError):
-        return hex_str
-
-
-def _tcp_holders(port, paths=("/proc/net/tcp",)):
-    """ESTABLISHED 到本地 port 的对端列表（IPv4），排除回环。
-
-    回环连接只可能是本进程——车上唯一的本地客户端就是本桥（robot-host 默认
-    127.0.0.1），且固件侧 ESTABLISHED 会比客户端慢一步才消失，每次 move 后
-    都会短暂留一个"幽灵"。一律排除，避免自报占用。
-
-    # ponytail: 假设车上没有第二个本地客户端；真出现了就按 inode 对
-    # /proc/self/fd 排除自己，别放宽这条。
-    """
-    holders = []
-    for path in paths:
-        try:
-            with open(path) as fh:
-                next(fh)  # 表头
-                for line in fh:
-                    parts = line.split()
-                    if len(parts) < 4:
-                        continue
-                    local, remote, state = parts[1], parts[2], parts[3]
-                    if int(local.split(":")[1], 16) != port or state != "01":
-                        continue
-                    rip, rport = remote.split(":")
-                    if rip == "0100007F":  # 127.0.0.1 回环，见 docstring
-                        continue
-                    holders.append("%s:%d" % (_hex_ipv4(rip), int(rport, 16)))
-        except (IOError, ValueError, IndexError):
-            continue
-    return holders
-
-
 # ---------------------------------------------------------------------------
 # 机器人桥：管理唯一的 2001 长连接 + 看门狗 + 会话所有权
 # ---------------------------------------------------------------------------
@@ -230,15 +158,6 @@ class RobotBridge(object):
         self._t0 = time.time()
         self._last_motion_time = 0.0
         self._gimbal, self._home = self._load_gimbal()
-
-        # Agent 遥测：2001 上只回距离帧（见 _note_rx_frame）
-        self._rx_buf = b""
-        self._rx_frames = 0
-        self._distance = None
-        self._distance_at = 0.0
-        self._samples = None
-        self._rx_stop = threading.Event()
-        self._rx_thread = None
 
         self._i2c = None
         if SMBus is not None:
@@ -302,18 +221,11 @@ class RobotBridge(object):
     def _connect_locked(self):
         if self._sock is not None:
             return
-        holders = _tcp_holders(self.port)
-        if holders:
-            raise OccupiedError(
-                "2001 被 %s 占用（单客户端，listen(1)）；对方的指令执行完/会话超时前"
-                "你的指令只会在内核排队、看起来‘发了不执行’。等它让出，或让占用者停手" % holders[0]
-            )
         sock = socket.create_connection((self.host, self.port), self.connect_timeout)
         sock.settimeout(2.0)
         self._sock = sock
         self._send_locked(STOP)
         self._last_heartbeat = time.time()
-        self._start_rx_locked(sock)
         print("[web] %s 已连接原厂服务 %s:%d，已发 STOP" % (self._stamp(), self.host, self.port))
         sys.stdout.flush()
 
@@ -346,7 +258,6 @@ class RobotBridge(object):
             self._sock.close()
         except socket.error:
             pass
-        self._stop_rx_locked()
         self._sock = None
         self._owner = None
 
@@ -522,184 +433,25 @@ class RobotBridge(object):
             sys.stdout.flush()
             return self._status_locked()
 
-    def claim(self, sid, lease=None):
-        """显式取得控制权：当前无运动指令时允许抢控，方向键仍被按住时拒绝。
-
-        lease>0 时额外把持有时间延到 now+lease 秒（agent 思考期间不被抢）。
-        """
+    def claim(self, sid):
+        """显式取得控制权：当前无运动指令时允许抢控，方向键仍被按住时拒绝。"""
         with self._lock:
             if (
                 self._owner is not None
                 and self._owner != sid
-                and (self._last_cmd is not None or time.time() < self._last_activity)
+                and self._last_cmd is not None
             ):
-                # _last_activity 在未来 = 前一个 sid 还在 lease 期内
                 status = self._status_locked(ok=False, reason="busy")
                 status["busy"] = True
                 return status
             if self._sock is not None:
                 self._send_locked(STOP)
-            now = time.time()
-            if lease:
-                lease_s = float(lease)
-                now += min(300.0, max(0.0, lease_s))
-                hold = "（持有 %.0fs）" % lease_s
-            else:
-                hold = ""
             self._owner = sid
-            self._last_activity = now
+            self._last_activity = time.time()
             self._last_cmd = None
-            print("[web] %s /claim sid=%.6s 取得控制权%s" % (self._stamp(), sid, hold))
+            print("[web] %s /claim sid=%.6s 取得控制权" % (self._stamp(), sid))
             sys.stdout.flush()
             return self._status_locked()
-
-    # -- Agent 调试接口（程序化调用，字段见 /api/help） ---------------------
-
-    def move(self, sid, key, ms):
-        """有界运动：发一次方向帧，到点自动 STOP，不用模拟"按住-刷新"。
-
-        # ponytail: 预置 _last_motion_time 到未来骗过运动看门狗（人页面那条
-        # 1.2s 防线对已知时长的自动指令是误伤）。上限 MOVE_MAX_MS；要更久的
-        # 连续运动就分段调，或调 --motion-timeout。
-        """
-        key = (key or "").lower()
-        if key not in MOTION_KEYS:
-            raise ValueError("invalid key: %r" % (key,))
-        ms = max(50, min(MOVE_MAX_MS, int(ms)))
-        token = "move:%s:%d" % (key, self._packets)
-        with self._lock:
-            self._touch_locked(sid)
-            print("[web] %s /api/move k=%s ms=%d sid=%.6s" % (
-                self._stamp(), key, ms, sid))
-            sys.stdout.flush()
-            self._last_motion_time = time.time() + ms / 1000.0
-            try:
-                self._connect_locked()
-            except socket.error as exc:
-                self._last_error = str(exc)
-                return self._status_locked(ok=False, reason="机器人连接失败: %s" % exc)
-            if not self._send_locked(MOTION_KEYS[key]):
-                return self._status_locked(ok=False, reason="发送失败")
-            self._last_cmd = token
-            self._last_activity = time.time()
-        time.sleep(ms / 1000.0)
-        with self._lock:
-            # 这期间没有别人接管/急停，才由本次 move 负责收尾
-            if self._last_cmd == token:
-                self._send_locked(STOP)
-                self._last_cmd = None
-            self._release_slot_locked()  # 2001 是稀缺资源，有界命令做完立即让出
-            return self._status_locked()
-
-    def sense(self, sid, seconds=1.0, force=False):
-        """超声测距流：进固件 13-05 模式收样，然后立刻退出。
-
-        ⚠ 高危：固件测距模式下 ``Get_Distence()`` 是
-        ``while not GPIO.input(ECHO): pass``——超声 ECHO(GPIO4) 未接或不拉高时
-        这个死循环永不返回，Cruising_Mod 线程被永久卡死在循环里，之后
-        ``FF 13 00`` 退出旗标再也不会被检查（线程只在两次循环之间看旗标）。
-        结果：固件"半聋"——巡航线程 100% 空转与主线程抢 GIL，每条指令
-        固件侧处理延迟 100-200ms 量级，只能重启固件恢复。
-        所以默认拒绝，必须 force=1 显式确认（并确认超声已接）才进。
-
-        # ponytail: 只解析距离帧；电压/脉冲的回复格式没有固件源码可证，
-        # 要用得先抓包，抓到再在 _note_rx_frame 加分支。
-        """
-        if not force:
-            return {"ok": False, "reason": "测距模式高危（ECHO 未接会永久卡死固件巡航线程），确认超声已接后加 force=1"}
-        seconds = max(0.3, min(SENSE_MAX_S, float(seconds)))
-        with self._lock:
-            self._touch_locked(sid)
-            print("[web] %s /api/telemetry %.1fs sid=%.6s" % (self._stamp(), seconds, sid))
-            sys.stdout.flush()
-            try:
-                self._connect_locked()
-            except socket.error as exc:
-                self._last_error = str(exc)
-                return self._status_locked(ok=False, reason="机器人连接失败: %s" % exc)
-            self._samples = []
-            if not self._send_locked(SENSE_START):
-                self._samples = None
-                return self._status_locked(ok=False, reason="发送失败")
-            self._last_activity = time.time()
-        deadline = time.time() + seconds
-        while time.time() < deadline:
-            time.sleep(0.05)
-        with self._lock:
-            self._send_locked(SENSE_END)
-            samples = self._samples or []
-            self._samples = None
-            self._last_cmd = None
-            self._release_slot_locked()
-            return dict(self._status_locked(), samples=samples)
-
-    # -- 2001 接收侧（只喂遥测，不参与发送路径） --------------------------
-
-    def _feed_rx(self, chunk):
-        """按 FF 起止把收到的字节切成 5 字节帧（与固件 recv(1) 同规则）。"""
-        buf = bytearray(self._rx_buf + chunk)  # py2 下 bytes[i] 是字符，统一走 bytearray
-        frames = []
-        while len(buf) >= 5:
-            if buf[0] != 0xFF or buf[4] != 0xFF:
-                buf = buf[1:]  # 丢到下一个 FF
-                continue
-            frames.append(bytes(bytearray(buf[:5])))
-            buf = buf[5:]
-        self._rx_buf = bytes(bytearray(buf))
-        return frames
-
-    def _note_rx_frame(self, frame):
-        body = bytearray(frame)
-        now = time.time()
-        self._rx_frames += 1
-        if body[1] == 0x03:
-            self._distance = body[3]
-            self._distance_at = now
-            if self._samples is not None:
-                self._samples.append(body[3])
-
-    def _start_rx_locked(self, sock):
-        self._rx_buf = b""
-        self._samples = None
-        self._rx_stop.clear()
-        thread = threading.Thread(target=self._rx_loop, args=(sock,), name="web-rx")
-        thread.daemon = True
-        self._rx_thread = thread
-        thread.start()
-
-    def _stop_rx_locked(self):
-        """只置停止位不 join：收线程最多阻塞在 recv 2s 超时上，不拖慢关连接；
-        socket 关闭后它自己退出。"""
-        self._rx_stop.set()
-        self._rx_thread = None
-
-    def _release_slot_locked(self):
-        """主动让出 2001 单客户端名额：不 STOP、不动 owner/姿态，只关连接。
-
-        有界命令（move/sense）做完立刻释放，避免 agent 调试期间把用户的
-        控制台/官方 APP 挡在门外 3 秒（会话超时）之久。
-        """
-        if self._sock is None:
-            return
-        try:
-            self._sock.close()
-        except socket.error:
-            pass
-        self._stop_rx_locked()
-        self._sock = None
-
-    def _rx_loop(self, sock):
-        while not self._rx_stop.is_set():
-            try:
-                data = sock.recv(256)
-            except socket.timeout:
-                continue
-            except socket.error:
-                return  # 连接已关：遥测是诊断，不影响发送路径
-            if not data:
-                return
-            for frame in self._feed_rx(data):
-                self._note_rx_frame(frame)
 
     def status(self):
         with self._lock:
@@ -714,22 +466,6 @@ class RobotBridge(object):
         payload["limits"] = dict((k, list(v)) for k, v in GIMBAL_LIMITS.items())
         return payload
 
-    def motion_feedback(self):
-        """读取车端运动反馈；I2C 不可用或读数异常时明确返回不可用。"""
-        with self._lock:
-            bus = self._i2c
-        if bus is None:
-            return {"ok": True, "available": False, "reason": "I2C 不可用",
-                    "pulse1": None, "pulse2": None, "voltage": None}
-        try:
-            return {"ok": True, "available": True, "reason": "",
-                    "pulse1": int(bus.XiaoRGEEK_SpeedCounter1()),
-                    "pulse2": int(bus.XiaoRGEEK_SpeedCounter2()),
-                    "voltage": int(bus.XiaoRGEEK_ReadVol())}
-        except Exception as exc:
-            return {"ok": False, "available": False, "reason": str(exc),
-                    "pulse1": None, "pulse2": None, "voltage": None}
-
     def close(self):
         self._stop_event.set()
         with self._lock:
@@ -737,7 +473,6 @@ class RobotBridge(object):
 
     def _status_locked(self, ok=True, reason=""):
         state = "connected" if self._sock is not None else "disconnected"
-        now = time.time()
         return {
             "ok": ok,
             "reason": reason or self._last_error,
@@ -747,12 +482,6 @@ class RobotBridge(object):
             "busy": False,
             "gimbal": dict(self._gimbal),
             "home": dict(self._home),
-            # Agent 诊断：up 是进程内单调可信时钟，ts 依赖树莓派 RTC/NTP（可能不对）
-            "up": round(now - self._t0, 2),
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-            "distance_cm": self._distance,
-            "distance_age": round(now - self._distance_at, 2) if self._distance_at else None,
-            "rx_frames": self._rx_frames,
         }
 
     # -- 看门狗 ------------------------------------------------------------
@@ -772,14 +501,13 @@ class RobotBridge(object):
                     and now - self._last_motion_time > self.motion_timeout
                 ):
                     print(
-                        "[web] %s 运动超时 %.1fs 无刷新，自动 STOP"
+                        "[web] %s 运动超时 %.1fs 无刷新，自动 STOP 并恢复默认速度"
                         % (self._stamp(), now - self._last_motion_time)
                     )
                     sys.stdout.flush()
                     self._send_locked(STOP)
-                    # 2026-09-19：不再立刻把轮速复位 100/100——弧线转向中途的
-                    # 超时复位会把内侧轮拽回静摩擦死区。对称速度由下次 W/S 前
-                    # 页面 applyStraight 重发，这里只停车、连接保留。
+                    self._send_locked(speed_frame(SPEED_LEFT, SPEED_DEFAULT))
+                    self._send_locked(speed_frame(SPEED_RIGHT, SPEED_DEFAULT))
                     self._last_cmd = None
                     continue
                 if now - self._last_activity > self.session_timeout:
@@ -905,10 +633,8 @@ var busy = false;
 var motionPointer = null;
 var stopSeq = 0;         /* 每次 /stop 自增；用于识别"迟到的 /cmd"并补偿停车 */
 var arcMode = false;     /* 默认原地转向（已验证稳定）；弧线差速待实车验证后再开启 */
-var ARC_INNER = 58;      /* 弧线内侧轮速度百分比。2026-09-19 架空实测：30% @ 1kHz 硬 PWM 低于
-                            齿轮箱静摩擦死区（转向无力、只有外侧轮转）；抬到 58 保证越过死区 */
-var ARC_OUTER = 100;     /* 弧线外侧轮速度百分比：满力。2026-09-19 实车反馈 58/80 速差太小
-                            （"两侧都转但车不转弯"），外侧给满、速差 42 个点转弯力矩翻倍 */
+var ARC_INNER = 30;      /* 弧线内侧轮速度百分比（可按需调整 15~50） */
+var ARC_OUTER = 80;      /* 弧线外侧轮速度百分比 */
 
 function api(path){
   return fetch(path + (path.indexOf("?")<0?"?":"&") + "sid=" + SID, {cache:"no-store"})
@@ -1217,46 +943,8 @@ videoImg.addEventListener("error", function(){
 """
 
 
-API_DOCS = {
-    "service": "car bridge (agent 调试接口)",
-    "protocol": "5 字节帧 FF b0 b1 b2 FF <-> 原厂 wifirobots.py TCP 2001",
-    "rules": [
-        "2001 单客户端（listen(1)）：先 /api/claim 再发运动/云台指令",
-        "/api/stop 不需要控制权，任何人任何时候都能停",
-        "2001 单客户端：被其它控制端（PC 控制台/手机页面/官方 APP）占用时连接直接报错，不会静默排队；move/sense 用完即释放名额",
-        "测距模式下固件不处理运动帧，/api/telemetry 用完会自动退出",
-        "/api/telemetry 默认拒绝：ECHO 未接会把固件巡航线程永久卡死（靠重启恢复），确认超声已接才加 force=1",
-        "sid 任意字符串即可标识自己；lease>0 可持有控制权 N 秒",
-        "事件排序用 status.up（进程内单调时钟）；ts 是墙上时钟，树莓派无 RTC 可能差天",
-    ],
-    "motion": "k: w前进 s后退 a左转 d右转（实车 A=右轮 B=左轮，语义见固件）",
-    "endpoints": {
-        "/api/help": "本说明",
-        "/api/claim?sid=&lease=": "取得控制权；lease 秒内不被其他 sid 抢（上限 300）",
-        "/api/move?sid=&k=&ms=": "有界运动：发一次方向帧，到点自动 STOP；ms∈[50,%d]" % MOVE_MAX_MS,
-        "/api/telemetry?sid=&seconds=": "超声测距流；返回 samples 采样(cm)；seconds∈[0.3,%.1f]；⚠ 高危需 force=1（ECHO 未接卡死固件，只能重启恢复）" % SENSE_MAX_S,
-        "/api/motion_feedback": "车端 I2C 脉冲计数与电压读数；只读，不保证传感器有效",
-        "/api/stop?sid=": "急停（无需控制权）",
-        "/ping?sid=": "刷新所有权 + 返回状态（含距离/心跳）",
-        "/status": "状态：robot/last/packets/up/ts/distance_cm/gimbal",
-        "/gimbal": "云台姿态、归位点、机械限位",
-        "/gimbal_set?sid=&pan=&tilt=": "设云台两轴（pan 0-185 / tilt 78-170）",
-        "/speed?sid=&side=&value=": "单侧轮速 0-100（side: left/right）",
-        "/servo?sid=&n=&a=": "1-8 号舵机",
-        "/gimbal_home": "把当前姿态记为归位点",
-        "/": "手机网页（人类用，agent 不必看）",
-    },
-}
-
-
 def _json_bytes(payload):
-    try:
-        data = json.dumps(payload, ensure_ascii=False)
-    except UnicodeDecodeError:  # py2：含中文字节串时 UTF-8 直出会炸，退回 \u 转义
-        return json.dumps(payload, ensure_ascii=True).encode("ascii")
-    if not isinstance(data, bytes):
-        data = data.encode("utf-8")
-    return data
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
 class HandlerBase(BaseHTTPRequestHandler):
@@ -1326,46 +1014,14 @@ class HandlerBase(BaseHTTPRequestHandler):
                     self._respond_busy()
                 except ValueError:
                     self._respond_json({"ok": False, "reason": "invalid servo number"}, 400)
-            elif path in ("/claim", "/api/claim"):
-                lease = (params.get("lease") or [""])[0]
-                try:
-                    self._respond_json(self.bridge.claim(sid, lease or None))
-                except ValueError:
-                    self._respond_json({"ok": False, "reason": "invalid lease"}, 400)
-            elif path == "/api/help":
-                self._respond_json(API_DOCS)
-            elif path == "/api/move":
-                key = (params.get("k") or [""])[0].lower()
-                try:
-                    ms = int((params.get("ms") or ["500"])[0])
-                except ValueError:
-                    self._respond_json({"ok": False, "reason": "invalid ms"}, 400)
-                    return
-                try:
-                    self._respond_json(self.bridge.move(sid, key, ms))
-                except BusyError:
-                    self._respond_busy()
-                except ValueError:
-                    self._respond_json({"ok": False, "reason": "invalid key"}, 400)
-            elif path in ("/api/telemetry", "/telemetry"):
-                try:
-                    seconds = float((params.get("seconds") or ["1.0"])[0])
-                except ValueError:
-                    self._respond_json({"ok": False, "reason": "invalid seconds"}, 400)
-                    return
-                force = (params.get("force") or [""])[0] in ("1", "true", "yes")
-                try:
-                    self._respond_json(self.bridge.sense(sid, seconds, force))
-                except BusyError:
-                    self._respond_busy()
-            elif path in ("/stop", "/api/stop"):
+            elif path == "/claim":
+                self._respond_json(self.bridge.claim(sid))
+            elif path == "/stop":
                 self._respond_json(self.bridge.stop(sid))
             elif path == "/ping":
                 self._respond_json(self.bridge.ping(sid))
             elif path == "/status":
                 self._respond_json(self.bridge.status())
-            elif path in ("/motion_feedback", "/api/motion_feedback"):
-                self._respond_json(self.bridge.motion_feedback())
             elif path == "/gimbal":
                 self._respond_json(self.bridge.gimbal())
             elif path == "/gimbal_set":

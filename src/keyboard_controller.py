@@ -10,10 +10,8 @@
 纯逻辑实现，不依赖 Qt，便于单元测试。
 """
 
-from __future__ import annotations
-
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 DRIVING_KEYS = ("w", "s", "a", "d")
 
@@ -22,7 +20,7 @@ class KeyStateMachine:
     """维护当前按下的方向键集合与优先级。"""
 
     def __init__(self) -> None:
-        self._order: list[str] = []
+        self._order = []
 
     @property
     def pressed(self) -> Tuple[str, ...]:
@@ -72,7 +70,7 @@ class MotionRefreshWatchdog:
 
     def __init__(self, timeout: float = 1.2) -> None:
         self.timeout = timeout
-        self._deadline: Optional[float] = None
+        self._deadline = None
 
     def arm(self, now: Optional[float] = None) -> None:
         """开始/继续监督（按下方向键或收到自动重复时调用）。"""
@@ -81,6 +79,11 @@ class MotionRefreshWatchdog:
     def disarm(self) -> None:
         """停止监督（松开全部按键/急停后调用）。"""
         self._deadline = None
+
+    @property
+    def armed(self) -> bool:
+        """是否正在监督一次未完成的运动。"""
+        return self._deadline is not None
 
     def should_stop(self, now: Optional[float] = None) -> bool:
         """是否已经超时（调用方负责之后 disarm）。"""
