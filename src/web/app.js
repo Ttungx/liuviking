@@ -411,6 +411,12 @@ $("applySpeed").addEventListener("click", () => {
   speedPreset = "straight";   // 直行预设就是这两个值：下次按方向键不再覆盖
   api(`/api/speed?side=left&value=${left}`)
     .then(() => api(`/api/speed?side=right&value=${right}`))
+    .then(() => {
+      // 左右配平立即推给里程计模型（反向映射在 odomParams 里），路线/手动直行同方向生效
+      const live = odomParams();
+      return api(`/api/odom_cfg?track=${live.track}&vmax=${live.vmax}` +
+                 `&left=${live.left}&right=${live.right}&dead=${live.dead}`);
+    })
     .then(applyStatus);
 });
 
@@ -794,8 +800,11 @@ function odomParams() {
   return {
     track: readPositive("trackWidth", 120),
     vmax: readPositive("vmax", 250),
-    left: readPositive("leftScale", 1),
-    right: readPositive("rightScale", 1),
+    // 滑杆语义 = 直行配平值（车偏左就把右轮调小，和手动同方向）；
+    // 路线侧模型增益要反着取：右轮滑杆 → 左轮增益、左轮滑杆 → 右轮增益，
+    // 这样"配平值"同时对手动直行和路线自动行走生效（方向一致）。
+    left: readPositive("rightSpeed", 100) / 100,
+    right: readPositive("leftSpeed", 100) / 100,
     dead: Math.max(0, readNumber("deadzone", 0)),
     tol: readPositive("routeTol", 12),
     heading: readNumber("routeHeading", 0),
@@ -812,7 +821,7 @@ function paintOdomEnabled() {
   $("routeOpenLoop").checked = routeOpenLoop;
   $("routeSemiAuto").checked = routeSemiAuto;
   document.querySelector(".map").classList.toggle("off", !odomEnabled);
-  ["trackWidth", "vmax", "leftScale", "rightScale", "deadzone", "routeTol", "routeHeading",
+  ["trackWidth", "vmax", "deadzone", "routeTol", "routeHeading",
    "routeStart", "routeStop", "routeClear", "odomReset", "mapReset", "routeOpenLoop",
    "routeSemiAuto", "routeAlignResume"].forEach((id) => {
     $(id).disabled = !odomEnabled;
@@ -1030,7 +1039,16 @@ $("odomReset").addEventListener("click", () => {
     .then(() => api("/api/odom_reset?x=0&y=0&theta_deg=0"))
     .then(applyOdom);
 });
-["trackWidth", "vmax", "leftScale", "rightScale", "deadzone", "routeTol", "routeHeading"].forEach((id) =>
+["trackWidth", "vmax", "deadzone"].forEach((id) =>
+  $(id).addEventListener("change", () => {
+    setting.save(id, $(id).value);
+    // 立即推给里程计：不然改了满速/死区，手动直行和模型仍按旧值算（今天踩的坑）
+    const live = odomParams();
+    api(`/api/odom_cfg?track=${live.track}&vmax=${live.vmax}` +
+        `&left=${live.left}&right=${live.right}&dead=${live.dead}`).then(applyOdom);
+  })
+);
+["routeTol", "routeHeading"].forEach((id) =>
   $(id).addEventListener("change", () => setting.save(id, $(id).value))
 );
 setInterval(() => {
@@ -1093,8 +1111,6 @@ function restoreSettings() {
   $("servoNum").value = setting.read("servoNum", "1");
   $("trackWidth").value = setting.read("trackWidth", "120");
   $("vmax").value = setting.read("vmax", "250");
-  $("leftScale").value = setting.read("leftScale", "1");
-  $("rightScale").value = setting.read("rightScale", "1");
   $("deadzone").value = setting.read("deadzone", "0");
   // 80mm 是旧版路点追踪的默认值，会在拐角前明显切弯；迁移旧默认值。
   const savedRouteTol = setting.read("routeTol", "");

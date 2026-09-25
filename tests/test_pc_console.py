@@ -37,7 +37,7 @@ LEFT = protocol.LEFT
 class RoutePhotoPlanTests(unittest.TestCase):
     def test_long_segment_photos_start_every_300mm_and_include_endpoint(self):
         schedule = Console._build_photo_schedule([(1800.0, 0.0)])
-        self.assertEqual(schedule, {0: [0.0, 300.0, 600.0, 900.0, 1200.0, 1500.0, 1800.0]})
+        self.assertEqual(schedule, {0: [float(d) for d in range(0, 1801, 150)]})
 
     def test_short_segment_has_no_photo_schedule(self):
         self.assertEqual(Console._build_photo_schedule([(1500.0, 0.0)]), {})
@@ -45,13 +45,15 @@ class RoutePhotoPlanTests(unittest.TestCase):
     def test_photo_schedule_consolidates_node_point_to_next_segment(self):
         """节点照片只留一份：本段终点交给下一段的 0mm 点（先对齐再拍）。"""
         schedule = Console._build_photo_schedule([(1600.0, 0.0), (1600.0, 1600.0)])
-        self.assertEqual(schedule[0], [0.0, 300.0, 600.0, 900.0, 1200.0, 1500.0])
-        self.assertEqual(schedule[1], [0.0, 300.0, 600.0, 900.0, 1200.0, 1500.0, 1600.0])
+        expected_seg0 = [float(d) for d in range(0, 1501, 150)]  # 节点 1600 交给下一段
+        expected_seg1 = [float(d) for d in range(0, 1501, 150)] + [1600.0]
+        self.assertEqual(schedule[0], expected_seg0)
+        self.assertEqual(schedule[1], expected_seg1)
 
     def test_photo_schedule_keeps_segment_end_when_next_is_short(self):
         """下一段太短没有拍照计划时，本段终点照保留，节点不丢拍。"""
         schedule = Console._build_photo_schedule([(1600.0, 0.0), (1600.0, 600.0)])
-        self.assertEqual(schedule[0], [0.0, 300.0, 600.0, 900.0, 1200.0, 1500.0, 1600.0])
+        self.assertEqual(schedule[0], [float(d) for d in range(0, 1601, 150)] + [1600.0])
         self.assertNotIn(1, schedule)
 
     def test_photo_waits_until_heading_aligned_with_segment(self):
@@ -465,7 +467,7 @@ class ConsoleHttpTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertFalse(route["active"])
         self.assertEqual(route["note"], "完成")
-        self.assertEqual(route["photos"]["done"], 7)  # 开放环下拍照点按估算推进
+        self.assertEqual(route["photos"]["done"], 13)  # 开放环下拍照点按估算推进（150mm 间隔）
 
     def test_semi_auto_route_waits_then_aligns_and_resumes(self) -> None:
         """半自动（semi=1）：节点拍完照停下等待，/api/route_align 对准下一段后继续。"""

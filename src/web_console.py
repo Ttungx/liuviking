@@ -96,7 +96,7 @@ GIMBAL_CHANNELS = {"pan": 7, "tilt": 8}
 GIMBAL_LIMITS = {"pan": (0, 185), "tilt": (78, 170)}
 GIMBAL_HOME = {"pan": 90, "tilt": 90}
 
-PHOTO_SPACING_MM = 300.0
+PHOTO_SPACING_MM = 150.0   # 原始 300mm，实车跑开环走约 2 倍距离，按实测直接缩减为 1/2（150mm）以对齐实车 30cm
 PHOTO_MIN_SEGMENT_MM = 1500.0
 PHOTO_SETTLE_SECONDS = 0.35
 #: 拍照点要求车头与所在段方向夹角不超过该值才拍（节点先转向下一段再拍）
