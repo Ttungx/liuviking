@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import socket
 import socketserver
 import sys
 import tempfile
@@ -181,6 +182,20 @@ class FakeRobotServer:
                 return frames
             time.sleep(0.02)
         return self.frames()
+
+
+class StartupGuardTests(unittest.TestCase):
+    def test_port_in_use_detects_existing_listener(self):
+        """防双实例：端口已被监听时为真，释放后为假。"""
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        probe.listen(1)
+        port = probe.getsockname()[1]
+        try:
+            self.assertTrue(web_console._port_in_use("127.0.0.1", port))
+        finally:
+            probe.close()
+        self.assertFalse(web_console._port_in_use("127.0.0.1", port))
 
 
 class ConsoleHttpTest(unittest.TestCase):

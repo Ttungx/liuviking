@@ -1229,6 +1229,23 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
 
 
+def _port_in_use(host, port):
+    """端口是否已有实例在监听。
+
+    防双实例：小车 2001 是单客户端，两个控制台各连一条会把指令塞进内核
+    排队（表现为"按了不动"）。今天已被这个坑咬过两次，启动时直接拒绝。
+    """
+    target = "127.0.0.1" if host in ("", "0.0.0.0") else host
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.5)
+        return probe.connect_ex((target, port)) == 0
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 def build_server(console, bind, port):
     return ThreadingHTTPServer((bind, port), make_handler(console))
 
@@ -1270,6 +1287,11 @@ def setup_logging(console, level):
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
+    if _port_in_use(args.bind, args.port):
+        print("[console] %s:%d 已有控制台在监听：同一台机器只该有一个控制台，"
+              "否则两个实例会抢小车 2001，表现为按了不动。本进程退出。"
+              % (args.bind, args.port))
+        return 2
     console = Console(
         motion_timeout=args.motion_timeout,
         session_timeout=args.session_timeout,
