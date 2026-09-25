@@ -317,10 +317,10 @@ class ConsoleHttpTest(unittest.TestCase):
     def test_odometry_accumulates_while_driving(self) -> None:
         self.connect()
         self.get("/api/cmd?k=w")
-        time.sleep(0.3)
+        time.sleep(0.7)   # 含 0.25s 起步静摩擦延迟（MOTION_START_LAG_SECONDS）
         self.get("/api/stop")
         pose = self.get("/api/odom")
-        self.assertGreater(pose["x"], 20.0)      # 250mm/s（默认满速）× ~0.3s
+        self.assertGreater(pose["x"], 20.0)      # 250mm/s（默认满速）× ~0.45s
         self.assertLess(pose["x"], 200.0)
 
     def test_route_requires_connection(self) -> None:
@@ -476,10 +476,31 @@ class ConsoleHttpTest(unittest.TestCase):
             self.console._duty["left"] = 100
             self.console._duty["right"] = 100
             self.console._last_cmd = "w"
+            self.console._odom_key = "w"          # 已在行驶：本用例只测积分的 dt 封顶
+            self.console._odom_lag_until = 0.0
             self.console._last_odom_t = time.monotonic() - 2.0  # 模拟被锁 2 秒
             self.console._odom_tick()
             x = self.console.odom.x
         self.assertLessEqual(x, web_console.ODOM_MAX_STEP_SECONDS * 250.0 + 1.0)
+
+    def test_odom_waits_start_lag_after_command_start(self) -> None:
+        """起步静摩擦延迟：按下的瞬间不产生位移估计，延迟过后才积分。"""
+        self.connect()
+        self.console.odom.configure(max_speed_mm_per_s=250.0)
+        with self.console._lock:
+            self.console.odom.reset()
+            self.console._duty["left"] = 100
+            self.console._duty["right"] = 100
+            self.console._last_cmd = "w"
+            self.console._odom_key = None          # 从静止起步
+            self.console._odom_lag_until = 0.0
+            self.console._last_odom_t = time.monotonic() - 0.5
+            self.console._odom_tick()
+            self.assertEqual(self.console.odom.x, 0.0)   # 延迟窗口内不动
+            self.console._odom_lag_until = 0.0           # 越过延迟
+            self.console._last_odom_t = time.monotonic() - 0.5
+            self.console._odom_tick()
+            self.assertGreater(self.console.odom.x, 0.0)
 
     def test_route_stop_keeps_reason_not_completed(self) -> None:
         """用户停止路线后 route.note 必须是停止原因，不能被收尾覆盖成"完成"。"""

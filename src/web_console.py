@@ -108,6 +108,9 @@ MOTION_FEEDBACK_PORT = 8082
 MOTION_FEEDBACK_PATH = "/api/motion_feedback"
 MOTION_FEEDBACK_POLL_SECONDS = 0.2
 ROUTE_FEEDBACK_TIMEOUT_SECONDS = 1.0
+#: 起步静摩擦延迟。指令切换（起步/换向）后电机要先克服静摩擦才动，这段时间
+#: 不该积分，否则估算比实际早走一步；路线里每个拐角、每次拍照后恢复都受影响。
+MOTION_START_LAG_SECONDS = 0.25
 #: 里程计单步积分上限。路线线程拍一组照会握着锁 ~2s，里程计线程憋住后
 #: 放开时 dt 陈旧；不封顶就会拿"停车时间 × 恢复指令"补积一大步假位移。
 ODOM_MAX_STEP_SECONDS = 0.25
@@ -216,6 +219,8 @@ class Console:
         self.odom = Odometry()
         self._duty = {"left": 100, "right": 100}   # 最近一次下发的左右占空比
         self._last_odom_t = None
+        self._odom_key = None          # 上一拍的运动指令（用于识别起步/换向）
+        self._odom_lag_until = 0.0     # 起步静摩擦延迟的截止时刻
         self._route = []                           # [(x_mm, y_mm), ...]
         self._route_index = 0
         self._route_active = False
@@ -521,6 +526,13 @@ class Console:
             if last is None:
                 return
             key = self._last_cmd if self.client.is_connected else None
+            if key != self._odom_key:
+                # 指令切换（含起步、换向）：电机要先克服静摩擦，先等一拍再积分，
+                # 否则估算会比实际"早动"（2026-09-25 用户实测：按下去一开始不动）。
+                self._odom_key = key
+                self._odom_lag_until = (now + MOTION_START_LAG_SECONDS) if key else 0.0
+            if key is None or now < self._odom_lag_until:
+                return
             v_left, v_right = self.odom.wheel_speeds(
                 key, self._duty["left"], self._duty["right"]
             )
